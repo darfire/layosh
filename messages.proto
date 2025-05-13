@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+option go_package = "./messages";
+
+enum MessageType {
+  REGISTRATION = 0;
+  USER_INPUT = 1;
+  OUTPUT = 2;
+  ERROR = 3;
+  REGISTERED = 4;
+  RESIZE = 5;
+}
+
+enum Role {
+  SHELL = 0;
+  LLM = 1;
+}
+
+message Message {
+  MessageType type = 1;
+  oneof message {
+    RegistrationMessage registration = 10;
+    UserInputMessage user_input = 11;
+    OutputMessage output = 12;
+    ErrorMessage error = 13;
+    RegisteredMessage registered = 14;
+    ResizeMessage resize = 15;
+  }
+}
+
+message RegistrationMessage {
+  uint32 session_id = 1;
+  Role role = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+message RegisteredMessage {
+  uint32 max_message_size = 1;
+}
+
+message UserInputMessage {
+  bytes data = 1;
+}
+
+message OutputMessage {
+  bytes data = 1;
+}
+
+message ErrorMessage {
+  string error = 1;
+}
+
+message ResizeMessage {
+  uint32 width = 1;
+  uint32 height = 2;
+}
