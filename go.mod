@@ -33,6 +33,7 @@ require (
 	github.com/rthornton128/goncurses v0.0.0-20240804152857-da6485a3b6d7 // indirect
 	github.com/sevlyar/go-daemon v0.1.6 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
+	github.com/urfave/cli/v3 v3.3.3 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/xeipuuv/gojsonpointer v0.0.0-20190905194746-02993c407bfb // indirect
 	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
