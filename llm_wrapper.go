@@ -12,6 +12,7 @@ import (
 	"github.com/firebase/genkit/go/ai"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/googlegenai"
+	"github.com/firebase/genkit/go/plugins/ollama"
 	"github.com/google/uuid"
 )
 
@@ -24,11 +25,18 @@ type LLMWrapper struct {
 	shellHistory bytes.Buffer
 	llmHistory   bytes.Buffer
 
-	settings Settings
+	settings *Settings
 
 	readerOut *io.PipeReader
 	writerIn  *io.PipeWriter
 	readline  *readline.Instance
+
+	modelConfig ModelConfig
+
+	genkit *genkit.Genkit
+	model  ai.Model
+
+	context context.Context
 }
 
 type LLMRequest struct {
@@ -56,7 +64,25 @@ type LLMSuggestion struct {
 	Commentary string `json:"commentary"`
 }
 
-func NewLLMWrapper(shellCommand []string) (*LLMWrapper, error) {
+type ModelConfig struct {
+	Provider string
+
+	ModelName string
+
+	AuthKey string
+
+	// ollama-specific
+	OllamaAddress string
+}
+
+func NewModelConfig() ModelConfig {
+	return ModelConfig{
+		Provider:  "googleai",
+		ModelName: "gemini-2.0",
+	}
+}
+
+func NewLLMWrapper(modelConfig ModelConfig, options ...func(*LLMWrapper)) (*LLMWrapper, error) {
 	readerIn, writerIn := io.Pipe()
 	readerOut, writerOut := io.Pipe()
 
@@ -75,8 +101,15 @@ func NewLLMWrapper(shellCommand []string) (*LLMWrapper, error) {
 		return nil, err
 	}
 
-	return &LLMWrapper{
-		shellCommand:   shellCommand,
+	context := context.Background()
+
+	genkit, model, err := MakeGenkitAndModel(modelConfig, context)
+
+	if err != nil {
+		return nil, err
+	}
+
+	l := &LLMWrapper{
 		outputChannel:  make(chan interface{}),
 		quitChannel:    make(chan bool),
 		requestChannel: make(chan LLMRequest),
@@ -88,7 +121,26 @@ func NewLLMWrapper(shellCommand []string) (*LLMWrapper, error) {
 		readerOut: readerOut,
 
 		readline: readline,
-	}, nil
+
+		genkit:      genkit,
+		model:       model,
+		modelConfig: modelConfig,
+		context:     context,
+
+		settings: NewSettings(),
+	}
+
+	for _, option := range options {
+		option(l)
+	}
+
+	return l, err
+}
+
+func WithCommand(command []string) func(*LLMWrapper) {
+	return func(l *LLMWrapper) {
+		l.shellCommand = command
+	}
 }
 
 const (
@@ -116,28 +168,80 @@ func (l *LLMWrapper) makePrompt(request LLMRequest) string {
 	return prompt
 }
 
-func (l *LLMWrapper) Start() {
-	ctx := context.Background()
+func WithModelConfig(modelConfig ModelConfig) func(*LLMWrapper) {
+	return func(l *LLMWrapper) {
+		l.modelConfig = modelConfig
+	}
+}
 
-	g, err := genkit.Init(ctx,
-		genkit.WithPlugins(&googlegenai.GoogleAI{}),
-		genkit.WithDefaultModel("googleai/gemini-2.0-flash"),
+func (c *ModelConfig) Plugins() []genkit.Plugin {
+	switch c.Provider {
+	case "googleai":
+		return []genkit.Plugin{&googlegenai.GoogleAI{}}
+	case "ollama":
+		return []genkit.Plugin{&ollama.Ollama{
+			ServerAddress: c.OllamaAddress,
+		}}
+	default:
+		return nil
+	}
+}
+
+func MakeGenkitAndModel(modelConfig ModelConfig, ctx context.Context) (*genkit.Genkit, ai.Model, error) {
+	plugins := modelConfig.Plugins()
+
+	genkit, err := genkit.Init(ctx,
+		genkit.WithPlugins(plugins...),
 	)
 
 	if err != nil {
-		panic(err)
+		return nil, nil, err
 	}
 
+	var model ai.Model
+
+	ollamaClient := ollama.Ollama{
+		ServerAddress: modelConfig.OllamaAddress,
+	}
+
+	err = ollamaClient.Init(ctx, genkit)
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch modelConfig.Provider {
+	case "googleai":
+		model = googlegenai.GoogleAIModel(genkit, modelConfig.ModelName)
+	case "ollama":
+		model = ollamaClient.DefineModel(
+			genkit,
+			ollama.ModelDefinition{
+				Name: modelConfig.ModelName,
+				Type: "chat",
+			},
+			nil,
+		)
+
+		log.Printf("Ollama model: %s, %v\n", modelConfig.ModelName, model)
+	default:
+		return nil, nil, fmt.Errorf("unknown model provider: %s", modelConfig.Provider)
+	}
+
+	return genkit, model, nil
+}
+
+func (l *LLMWrapper) Start() {
 	l.readline.CaptureExitSignal()
 
 	getSuggestionFlow := genkit.DefineFlow(
-		g,
+		l.genkit,
 		"ShellSuggestion",
 		func(ctx context.Context, request LLMRequest) (LLMResponse, error) {
 			prompt := l.makePrompt(request)
 
 			suggestion, _, err := genkit.GenerateData[LLMSuggestion](
-				ctx, g, ai.WithPrompt(prompt))
+				ctx, l.genkit, ai.WithModel(l.model), ai.WithPrompt(prompt))
 
 			if err != nil {
 				Error("Error generating suggestion: %v\n", err)
@@ -188,7 +292,7 @@ func (l *LLMWrapper) Start() {
 		for {
 			select {
 			case request := <-l.requestChannel:
-				response, err := getSuggestionFlow.Run(ctx, request)
+				response, err := getSuggestionFlow.Run(l.context, request)
 
 				if err != nil {
 					l.outputChannel <- err

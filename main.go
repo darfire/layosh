@@ -57,7 +57,37 @@ func runTmuxCmd(args ...string) *exec.Cmd {
 	return cmd
 }
 
+func splitProviderModel(model string) (string, string, error) {
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid model format: %s", model)
+	}
+
+	provider := parts[0]
+	modelName := parts[1]
+
+	if provider == "" || modelName == "" {
+		return "", "", fmt.Errorf("provider or model name cannot be empty")
+	}
+
+	return provider, modelName, nil
+}
+
 func runServer(cmd *cli.Command) {
+	modelConfig := NewModelConfig()
+
+	provider, model, err := splitProviderModel(
+		cmd.String("model"))
+
+	if err != nil {
+		log.Fatalf("Error parsing model: %s (%v)", cmd.String("model"), err)
+	}
+
+	modelConfig.Provider = provider
+	modelConfig.ModelName = model
+
+	modelConfig.OllamaAddress = cmd.String("ollama-address")
+
 	command := cmd.Args().Slice()
 
 	if len(command) == 0 {
@@ -72,7 +102,7 @@ func runServer(cmd *cli.Command) {
 
 	SetDebug(cmd.Bool("debug"))
 
-	server, err := NewServer(command, sessionId)
+	server, err := NewServer(modelConfig, command, sessionId)
 	if err != nil {
 		log.Fatalf("Error creating server: %v", err)
 	}
@@ -128,6 +158,10 @@ func runTmux(executable string, cmd *cli.Command) {
 
 	serverCmd := NewCommand(
 		executable, "server", "-session", fmt.Sprintf("%d", sessionId))
+
+	serverCmd = serverCmd.append(
+		"-model", cmd.String("model"),
+		"-ollama-address", cmd.String("ollama-address"))
 
 	shellCmd := NewCommand(
 		executable, "shell", "-session", fmt.Sprintf("%d", sessionId))
@@ -202,6 +236,16 @@ func main() {
 						Name:  "command",
 						Usage: "command to run",
 					},
+					&cli.StringFlag{
+						Name:  "model",
+						Usage: "model to use",
+						Value: "googleai/gemini-2.0-flash",
+					},
+					&cli.StringFlag{
+						Name:  "ollama-address",
+						Usage: "ollama host",
+						Value: "http://localhost:11434",
+					},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {
 					runServer(c)
@@ -263,6 +307,16 @@ func main() {
 					&cli.StringSliceFlag{
 						Name:  "command",
 						Usage: "command to run",
+					},
+					&cli.StringFlag{
+						Name:  "model",
+						Usage: "model to use",
+						Value: "googleai/gemini-2.0-flash",
+					},
+					&cli.StringFlag{
+						Name:  "ollama-address",
+						Usage: "ollama host",
+						Value: "http://localhost:11434",
 					},
 				},
 				Action: func(ctx context.Context, c *cli.Command) error {

@@ -56,7 +56,8 @@ Connect to the LLM:
 
 ## Roadmap
 - [X] Tmux wrapper
-- [ ] Add support for more LLMs: openai, ollama, etc.
+- [X] Add support for Ollama
+- [ ] Add support for OpenAI
 - [ ] Customize the LLM prompt for major shells
 - [ ] Add web-server support
 - [ ] Review mode: review and/or edit the command before executing it

@@ -46,7 +46,7 @@ type Size struct {
 	Height uint32
 }
 
-func NewServer(command []string, sessionId int) (*Server, error) {
+func NewServer(modelConfig ModelConfig, command []string, sessionId int) (*Server, error) {
 	if sessionId == -1 {
 		sessionId = os.Getpid()
 	}
@@ -77,7 +77,7 @@ func NewServer(command []string, sessionId int) (*Server, error) {
 		return nil, err
 	}
 
-	llmWrapper, err := NewLLMWrapper(command)
+	llmWrapper, err := NewLLMWrapper(modelConfig, WithCommand(command))
 
 	if err != nil {
 		return nil, err
