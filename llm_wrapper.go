@@ -145,7 +145,7 @@ func NewLLMWrapper(modelConfig ModelConfig, options ...func(*LLMWrapper)) (*LLMW
 		gk,
 		"ShellSuggestion",
 		func(ctx context.Context, request LLMRequest) (LLMResponse, error) {
-			log.Printf("LLMWrapper: generating suggestion for request: %s\n", request.request)
+			Debug("LLMWrapper: generating suggestion for request: %s\n", request.request)
 
 			prompt := l.makePrompt(request)
 
@@ -259,7 +259,7 @@ func MakeGenkitAndModel(modelConfig ModelConfig, ctx context.Context) (*genkit.G
 			nil,
 		)
 
-		log.Printf("Ollama model: %s, %v\n", modelConfig.ModelName, model)
+		Debug("Ollama model: %s, %v\n", modelConfig.ModelName, model)
 	default:
 		return nil, nil, fmt.Errorf("unknown model provider: %s", modelConfig.Provider)
 	}
@@ -282,12 +282,12 @@ func (l *LLMWrapper) Start() {
 				break
 			}
 
-			log.Printf("LLMWrapper: read line: %s\n", line)
+			Debug("LLMWrapper: read line: %s\n", line)
 
 			lineChannel <- line
 		}
 
-		log.Printf("LLMWrapper: readline closed\n")
+		Debug("LLMWrapper: readline closed\n")
 	}()
 
 	go func() {
@@ -303,7 +303,7 @@ func (l *LLMWrapper) Start() {
 			l.outputChannel <- buf[:n]
 		}
 
-		log.Printf("LLMWrapper: readerOut closed\n")
+		Debug("LLMWrapper: readerOut closed\n")
 	}()
 
 	go func() {
@@ -311,7 +311,7 @@ func (l *LLMWrapper) Start() {
 		for {
 			select {
 			case line := <-lineChannel:
-				log.Printf("LLMWrapper: got line from readline: %s\n", line)
+				Debug("LLMWrapper: got line from readline: %s\n", line)
 				err := l.handleLine(line)
 
 				if err != nil {
@@ -331,7 +331,7 @@ func (l *LLMWrapper) Start() {
 			}
 		}
 
-		log.Printf("LLMWrapper: channel loop closed\n")
+		Debug("LLMWrapper: channel loop closed\n")
 	}()
 }
 
@@ -342,15 +342,13 @@ func (l *LLMWrapper) Stop() {
 }
 
 func (l *LLMWrapper) AddShellOutput(data []byte) {
-	log.Printf("Adding shell output: %d bytes\n", len(data))
+	Debug("Adding shell output: %d bytes\n", len(data))
 	l.inputChannel <- AddShellHistoryCommand{data: data}
-	log.Printf("Added")
 }
 
 func (l *LLMWrapper) AddShellInput(data []byte) {
-	log.Printf("Adding shell input: %d bytes\n", len(data))
+	Debug("Adding shell input: %d bytes\n", len(data))
 	l.inputChannel <- AddShellHistoryCommand{data: data}
-	log.Printf("Added")
 }
 
 func (l *LLMWrapper) AddLLMInput(data []byte) {

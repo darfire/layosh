@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -153,7 +152,7 @@ func (s *Server) Start() {
 		}
 	}
 
-	log.Printf("Server closed")
+	Debug("Server closed")
 }
 
 func (s *Server) handleShellOutput(msg interface{}) {
@@ -428,7 +427,7 @@ func (s *Server) runConnection(reader *bufio.Reader, channel chan interface{}) {
 }
 
 func (s *Server) Stop() {
-	log.Printf("Stopping server")
+	Debug("Stopping server")
 	if s.shellSocket != nil {
 		s.shellSocket.Close()
 	}
