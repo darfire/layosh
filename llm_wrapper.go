@@ -10,6 +10,7 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/googlegenai"
 	"github.com/firebase/genkit/go/plugins/ollama"
@@ -17,10 +18,10 @@ import (
 )
 
 type LLMWrapper struct {
-	shellCommand   []string
-	outputChannel  chan interface{}
-	quitChannel    chan bool
-	requestChannel chan LLMRequest
+	shellCommand  []string
+	outputChannel chan interface{}
+	inputChannel  chan interface{}
+	quitChannel   chan bool
 
 	shellHistory bytes.Buffer
 	llmHistory   bytes.Buffer
@@ -36,7 +37,17 @@ type LLMWrapper struct {
 	genkit *genkit.Genkit
 	model  ai.Model
 
+	flow *core.Flow[LLMRequest, LLMResponse, struct{}]
+
 	context context.Context
+}
+
+type AddShellHistoryCommand struct {
+	data []byte
+}
+
+type AddLLMHistoryCommand struct {
+	data []byte
 }
 
 type LLMRequest struct {
@@ -101,18 +112,18 @@ func NewLLMWrapper(modelConfig ModelConfig, options ...func(*LLMWrapper)) (*LLMW
 		return nil, err
 	}
 
-	context := context.Background()
+	ctx := context.Background()
 
-	genkit, model, err := MakeGenkitAndModel(modelConfig, context)
+	gk, model, err := MakeGenkitAndModel(modelConfig, ctx)
 
 	if err != nil {
 		return nil, err
 	}
 
 	l := &LLMWrapper{
-		outputChannel:  make(chan interface{}),
-		quitChannel:    make(chan bool),
-		requestChannel: make(chan LLMRequest),
+		outputChannel: make(chan interface{}),
+		inputChannel:  make(chan interface{}),
+		quitChannel:   make(chan bool),
 
 		shellHistory: bytes.Buffer{},
 		llmHistory:   bytes.Buffer{},
@@ -122,13 +133,38 @@ func NewLLMWrapper(modelConfig ModelConfig, options ...func(*LLMWrapper)) (*LLMW
 
 		readline: readline,
 
-		genkit:      genkit,
+		genkit:      gk,
 		model:       model,
 		modelConfig: modelConfig,
-		context:     context,
+		context:     ctx,
 
 		settings: NewSettings(),
 	}
+
+	flow := genkit.DefineFlow(
+		gk,
+		"ShellSuggestion",
+		func(ctx context.Context, request LLMRequest) (LLMResponse, error) {
+			log.Printf("LLMWrapper: generating suggestion for request: %s\n", request.request)
+
+			prompt := l.makePrompt(request)
+
+			suggestion, _, err := genkit.GenerateData[LLMSuggestion](
+				ctx, gk, ai.WithModel(model), ai.WithPrompt(prompt))
+
+			if err != nil {
+				Error("Error generating suggestion: %v\n", err)
+				return LLMResponse{}, err
+			}
+
+			return LLMResponse{
+				command:    suggestion.Command,
+				commentary: suggestion.Commentary,
+			}, nil
+		},
+	)
+
+	l.flow = flow
 
 	for _, option := range options {
 		option(l)
@@ -234,26 +270,7 @@ func MakeGenkitAndModel(modelConfig ModelConfig, ctx context.Context) (*genkit.G
 func (l *LLMWrapper) Start() {
 	l.readline.CaptureExitSignal()
 
-	getSuggestionFlow := genkit.DefineFlow(
-		l.genkit,
-		"ShellSuggestion",
-		func(ctx context.Context, request LLMRequest) (LLMResponse, error) {
-			prompt := l.makePrompt(request)
-
-			suggestion, _, err := genkit.GenerateData[LLMSuggestion](
-				ctx, l.genkit, ai.WithModel(l.model), ai.WithPrompt(prompt))
-
-			if err != nil {
-				Error("Error generating suggestion: %v\n", err)
-				return LLMResponse{}, err
-			}
-
-			return LLMResponse{
-				command:    suggestion.Command,
-				commentary: suggestion.Commentary,
-			}, nil
-		},
-	)
+	lineChannel := make(chan string)
 
 	go func() {
 		for {
@@ -265,7 +282,9 @@ func (l *LLMWrapper) Start() {
 				break
 			}
 
-			l.handleLine(line)
+			log.Printf("LLMWrapper: read line: %s\n", line)
+
+			lineChannel <- line
 		}
 
 		log.Printf("LLMWrapper: readline closed\n")
@@ -291,15 +310,21 @@ func (l *LLMWrapper) Start() {
 	mainloop:
 		for {
 			select {
-			case request := <-l.requestChannel:
-				response, err := getSuggestionFlow.Run(l.context, request)
+			case line := <-lineChannel:
+				log.Printf("LLMWrapper: got line from readline: %s\n", line)
+				err := l.handleLine(line)
 
 				if err != nil {
 					l.outputChannel <- err
 					continue
 				}
 
-				l.outputChannel <- response
+			case command := <-l.inputChannel:
+				switch cmd := command.(type) {
+				case AddShellHistoryCommand:
+					l.shellHistory.Write(cmd.data)
+					l.shellHistory.Write([]byte("\n"))
+				}
 
 			case <-l.quitChannel:
 				break mainloop
@@ -317,11 +342,15 @@ func (l *LLMWrapper) Stop() {
 }
 
 func (l *LLMWrapper) AddShellOutput(data []byte) {
-	l.shellHistory.Write(data)
+	log.Printf("Adding shell output: %d bytes\n", len(data))
+	l.inputChannel <- AddShellHistoryCommand{data: data}
+	log.Printf("Added")
 }
 
 func (l *LLMWrapper) AddShellInput(data []byte) {
-	l.shellHistory.Write(data)
+	log.Printf("Adding shell input: %d bytes\n", len(data))
+	l.inputChannel <- AddShellHistoryCommand{data: data}
+	log.Printf("Added")
 }
 
 func (l *LLMWrapper) AddLLMInput(data []byte) {
@@ -335,6 +364,8 @@ func (l *LLMWrapper) outputToTerminal(data string) {
 }
 
 func (l *LLMWrapper) handleLine(line string) error {
+	log.Printf("Handling line: %s\n", line)
+
 	l.llmHistory.WriteString(line + "\n")
 
 	command, err := parseCommand(line)
@@ -365,7 +396,7 @@ func (l *LLMWrapper) handleLine(line string) error {
 			id:           requestId,
 		}
 
-		l.requestChannel <- request
+		l.handleLLMRequest(request)
 	}
 
 	return nil
@@ -485,4 +516,16 @@ func adjustNewlines(s string) string {
 
 func (l *LLMWrapper) ResizeTerminal(width, height uint32) {
 	// we don't handle resizing in the LLM wrapper
+}
+
+func (l *LLMWrapper) handleLLMRequest(request LLMRequest) {
+	log.Printf("Handling LLM request: %s\n", request.request)
+	response, err := l.flow.Run(l.context, request)
+
+	if err != nil {
+		l.outputChannel <- err
+		return
+	}
+
+	l.outputChannel <- response
 }
